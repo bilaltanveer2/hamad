@@ -1,0 +1,594 @@
+## Project Overview
+
+- **Project name**: GoCart – multi-vendor e‑commerce platform
+- **What the website does**: Provides a complete online shopping experience with a public storefront, product catalog, cart and checkout, order tracking, vendor (store) dashboards for managing products and orders, and an admin panel to manage stores, coupons, and platform‑level analytics.
+- **Main purpose**: Enable multiple independent sellers to create and manage their own stores and products under a single marketplace, while providing customers a modern, fast, and responsive shopping UX.
+- **Target users**:
+  - **Shoppers/customers**: Browse products, manage cart, apply coupons, place orders, track their purchases.
+  - **Vendors/store owners**: Apply to create a store, add/manage products, see store analytics, manage orders.
+  - **Platform administrators**: Approve/reject stores, toggle store activity, manage coupons, and see global metrics.
+
+---
+
+## Technology Stack
+
+### Frontend
+
+- **Framework**: Next.js `^16.1.6` using the **App Router** (`app/` directory) with client and server components.
+- **UI library**: React `^19.2.1`.
+- **Styling**:
+  - Tailwind CSS v4 (via `@tailwindcss/postcss` and `app/globals.css`).
+  - Utility‑first styling with semantic class names (`mx-6`, `min-h-[70vh]`, `text-slate-...`).
+- **Icons**: `lucide-react` for SVG icons throughout the UI.
+- **Notifications**: `react-hot-toast` (`Toaster` in `app/layout.jsx` and `app/providers.jsx`).
+- **Forms / UX**:
+  - Standard HTML form elements with controlled React state.
+  - File inputs for images, with previews via `URL.createObjectURL`.
+  - Client routing and navigation through `next/navigation` hooks (`useRouter`, `useParams`, `useSearchParams`).
+
+### Backend
+
+- **Runtime**: Next.js API routes under `app/api/**` (App Router convention – each `route.js` exports HTTP handlers).
+- **ORM**: Prisma `^6.19.2` with PostgreSQL:
+  - Client: `@prisma/client`.
+  - Adapter: `@prisma/adapter-neon` for Neon serverless Postgres.
+- **Database provider**: `postgresql` (configured via `DATABASE_URL`).
+- **Business logic**:
+  - REST‑style JSON APIs for products, cart, orders, address, store, coupons, admin dashboards, etc.
+  - Background jobs / event‑driven actions via Inngest.
+
+### Database
+
+- **Database**: PostgreSQL, accessed via Prisma.
+- **Prisma schema** (`prisma/schema.prisma`) defines:
+  - `User`, `Store`, `Product`, `Order`, `OrderItem`, `Rating`, `Address`, `Coupon`.
+  - Enums for `OrderStatus` and `PaymentMethod`.
+
+### Authentication & Authorization
+
+- **Auth provider**: Clerk (`@clerk/nextjs`).
+  - Client‑side: `useUser`, `useAuth`, `ClerkProvider`, `SignedIn`, `SignedOut`, `SignIn`, `SignInButton`.
+  - Server‑side: `auth()` and `getAuth()` from `@clerk/nextjs/server` for access to `userId` and membership checks (`has({ plan: 'plus' })`).
+- **Admin authorization** (`middlewares/authAdmin.js`):
+  - Uses `clerkClient` to fetch the user’s primary email.
+  - Compares against `ADMIN_EMAIL` env variable (comma‑separated; cleaned of quotes) to determine admin status.
+- **Seller authorization** (`middlewares/authSeller.js`):
+  - Looks up the Prisma `User` including its `store` relation.
+  - Returns the store ID only if the store exists and its `status` is `'approved'`. Otherwise returns `false`.
+- **Protected UIs**:
+  - `/admin` layout wraps children with `SignedIn`/`SignedOut` and `AdminLayout`.
+  - `/store` layout wraps children with `SignedIn`/`SignedOut` and `StoreLayout`.
+  - `StoreLayout` and server APIs also enforce seller status and store `isActive` checks.
+
+### Payments
+
+- **Payment gateway**: Stripe (`stripe` npm package).
+- **Checkout flow**:
+  - Checkout sessions created in `app/api/orders/route.js` (for STRIPE payment method).
+  - Uses Stripe Checkout with metadata storing `orderIds`, `userId`, and `appId: 'gocart'`.
+- **Webhooks** (`app/api/stripe/route.js`):
+  - Validates webhook events with `stripe.webhooks.constructEvent` using `STRIPE_WEBHOOK_SECRET`.
+  - Handles `payment_intent.succeeded` and `payment_intent.canceled`:
+    - On success: marks related orders `isPaid = true` and empties user `cart`.
+    - On cancel: marks related orders `isPaid = false`.
+  - Returns `{ received: true }` when processed; responds with `400` on errors.
+
+### State Management
+
+- **Redux Toolkit** (`@reduxjs/toolkit`, `react-redux`):
+  - Store configuration in `lib/store.js` with slices:
+    - `cart`: quantities per product ID, total count, and async `fetchCart`/`uploadCart`.
+    - `product`: product list and async `fetchProducts`.
+    - `address`: user address list and async `fetchAddress`.
+    - `rating`: user ratings.
+  - Store provided via `StoreProvider` (client component) and React Redux `<Provider>`.
+  - `app/providers.jsx` wraps children in `ClerkProvider`, `StoreProvider`, and `Toaster`.
+
+### APIs & External Services
+
+- **External APIs / services**:
+  - **Clerk**: authentication and subscriptions (including `PricingTable` in pricing page).
+  - **Stripe**: checkout and webhooks for order payments.
+  - **Neon**: Postgres hosting (via `@neondatabase/serverless`).
+  - **ImageKit**: product & store image uploads and optimization.
+  - **OpenAI**: AI assistance for product listing generation (`configs/openai.js`, `app/api/store/ai/route.js`).
+  - **Inngest**: event‑driven workflows for:
+    - Syncing Clerk user lifecycle to Prisma `User`.
+    - Deleting coupons on expiry (`app/coupon.expired`).
+- **Internal APIs** (Next.js API routes):
+  - `/api/products`: listing products for storefront, filtered by `storeId` and ensuring `store.isActive`.
+  - `/api/cart`: persist/fetch per‑user cart JSON.
+  - `/api/address`: CRUD for user addresses (current code uses POST+GET).
+  - `/api/orders`: create multi‑store orders and list user orders.
+  - `/api/store/*`: seller‑side operations – `create`, `product`, `dashboard`, `orders`, `stock-toggle`, `is-seller`, `data`.
+  - `/api/admin/*`: admin‑side operations – `dashboard`, `stores`, `approve-store`, `toggle-store`, `coupon`, `is-admin`.
+  - `/api/coupon`: public coupon validation for customers.
+  - `/api/rating`: rating operations for customer reviews.
+  - `/api/inngest`: Inngest handler endpoint.
+
+### Deployment & Runtime
+
+- **Scripts** in `package.json`:
+  - `dev`: `next dev --turbopack` (Next.js dev server with Turbopack).
+  - `build`: runs `prisma generate` then `next build`.
+  - `start`: `next start`.
+  - `postinstall`: `prisma generate`.
+- **Next.js configuration** (`next.config.mjs`):
+  - `images.unoptimized = true` (avoids Next image optimization, useful for certain deployments).
+- Intended deployment: serverless‑friendly (e.g. Vercel or similar) given use of Next.js App Router and serverless patterns, but not hard‑coded to a specific provider.
+
+---
+
+## Project Structure
+
+### Top‑Level Folders
+
+- **`app/`**:
+  - Next.js App Router entry point with layouts and pages for:
+    - Public site (`(public)` segment).
+    - Store (seller) dashboard (`store` segment).
+    - Admin dashboard (`admin` segment).
+    - API routes (`api` segment).
+  - Key files:
+    - `app/layout.jsx`: Root layout, wraps content with `ClerkProvider`, `Providers` and includes `Toaster`.
+    - `app/providers.jsx`: Client‑side provider tree (Clerk + Redux + Toaster).
+    - `app/globals.css`: Tailwind and base styles.
+    - `app/StoreProvider.js`: Configures Redux store per request on client.
+- **`components/`**:
+  - Reusable UI and feature components:
+    - Public: `Navbar`, `Footer`, `Hero`, `BestSelling`, `LatestProducts`, `ProductCard`, `ProductDetails`, `ProductDescription`, `PageTitle`, `OrderSummary`, `OrderItem`, `Counter`, `Banner`, etc.
+    - Store: `store/StoreLayout`, `StoreNavbar`, `StoreSidebar`.
+    - Admin: `admin/AdminLayout`, `AdminNavbar`, `AdminSidebar`, `StoreInfo`, `OrdersAreaChart`.
+    - Shared: `Loading`, `AddressModal`, `Newsletter`, etc.
+- **`lib/`**:
+  - `lib/store.js`: Redux store configuration.
+  - `lib/features/**`: Redux slices and async thunks:
+    - `cart/cartSlice.js`.
+    - `product/productSlice.js`.
+    - `address/addressSlice.js`.
+    - `rating/ratingSlice.js`.
+- **`app/api/`**:
+  - Backend HTTP handlers grouped by domain:
+    - `products`, `cart`, `orders`, `address`, `coupon`, `rating`, `stripe`, `inngest`.
+    - `store/*` for seller‑side data and operations.
+    - `admin/*` for administrative controls and analytics.
+- **`assets/`**:
+  - Static images and dummy data for seeding UI and development:
+    - Product images, logos, hero graphics.
+    - `productDummyData`, `dummyStoreData`, `dummyRatingsData`.
+    - `addressDummyData`, `couponDummyData`, `orderDummyData`, etc.
+- **`middlewares/`**:
+  - Authorization helpers:
+    - `authAdmin.js`: admin boundary based on email allowlist.
+    - `authSeller.js`: ensures user has an approved store.
+- **`inngest/`**:
+  - `client.js`: Inngest client configuration with app ID and signing key.
+  - `functions.js`: Inngest functions for syncing Clerk users and coupon expiry handling.
+- **`prisma/`**:
+  - `schema.prisma`: Database schema, models, and relations.
+- **Config files**:
+  - `package.json`, `next.config.mjs`, `postcss.config.mjs`, `.env`/`.env.local`, etc.
+
+---
+
+## Features
+
+### User Authentication
+
+- Sign‑up and login through **Clerk** with hosted UIs (`SignIn`, `SignInButton`, `ClerkProvider`).
+- Protected areas:
+  - Cart and order placement require login; if user not logged in, actions show a toast or redirect to home.
+  - `/store/**` and `/admin/**` gated via `SignedIn` wrappers and server‑side middleware.
+- Inngest hooks (`clerk/user.created`, `clerk/user.updated`, `clerk/user.deleted`) keep Prisma `User` in sync with Clerk.
+
+### Product Listing (Customer‑Facing)
+
+- **Home page** (`app/(public)/page.jsx`):
+  - Hero section, featured/latest products, best‑selling section, brand specs, newsletter.
+- **Shop page** (`app/(public)/shop/page.jsx`):
+  - Lists all products using `ProductCard`.
+  - Search via query string (`?search=`); filters Redux product list on client.
+- **Storefront page** (`app/(public)/shop/[username]/page.jsx`):
+  - Uses `/api/store/data?username=` to fetch store info and products.
+  - Renders store banner (logo, description, address, email) and store’s products.
+  - If store is inactive, shows a deactivation message rather than products.
+- **Product details page** (`app/(public)/product/[productId]/page.jsx`):
+  - Fetches product from Redux list by `productId`.
+  - Renders product details and description/reviews via `ProductDetails` and `ProductDescription`.
+
+### Product Management (Store Dashboard)
+
+- **Add Product** (`app/store/add-product/page.jsx`):
+  - Form with fields: name, description, MRP, price, category, images.
+  - Validates at least one image.
+  - Sends `FormData` to `/api/store/product` with seller auth token.
+  - Utilizes AI assistance:
+    - When first image slot is filled, sends base64 image to `/api/store/ai`.
+    - AI endpoint uses OpenAI Vision model to generate structured JSON and auto‑fill `name` and `description`.
+- **Manage Products** (`app/store/manage-product/page.jsx`):
+  - Fetches seller products from `/api/store/product` with authorization.
+  - Displays product table with name, description, MRP, price, primary image.
+  - Toggles in‑stock status via `/api/store/stock-toggle` and instantly updates UI.
+
+### Cart System
+
+- **Client state**: `cartSlice` (Redux).
+  - `cartItems`: dictionary of `{ [productId]: quantity }`.
+  - `total`: total quantity across products.
+  - Reducers:
+    - `addToCart`, `removeFromCart`, `deleteItemFromCart`, `clearCart`.
+  - Derives line totals and cart summary in components (`Cart` page and `OrderSummary`).
+- **Persistence**:
+  - `uploadCart` async thunk posts `cartItems` to `/api/cart`, debounced to avoid frequent updates.
+  - `fetchCart` loads server‑stored cart into Redux.
+  - On order completion (COD or Stripe success), user `cart` JSON is cleared on server.
+- **UI**:
+  - Cart page (`app/(public)/cart/page.jsx`) maps Redux `cartItems` with product list to computed `cartArray`.
+  - Integrates quantity `Counter`, remove buttons, and `OrderSummary` pane.
+
+### Checkout & Payment
+
+- **Address selection / management**:
+  - User addresses fetched on login by `fetchAddress(getToken)` and stored in `state.address.list`.
+  - `OrderSummary` shows an address dropdown; user can:
+    - Select an existing address from `addressSlice.list`.
+    - Add a new address via `AddressModal`, which:
+      - Sends POST to `/api/address` with the form payload.
+      - On success, dispatches `addAddress` to append to Redux list.
+- **Coupon application**:
+  - Users enter a coupon code in `OrderSummary`.
+  - `handleCouponCode` POSTs to `/api/coupon` with `code` and auth token.
+  - Server looks up an unexpired coupon, enforces:
+    - Member‑only (`forMember`) with Clerk `has({ plan: 'plus' })`.
+    - New user only (`forNewUser`) based on prior orders.
+    - Single‑use per user (checks previous orders with matching coupon code).
+  - Success response includes coupon details; client subtracts discount from subtotal and displays code/description.
+- **Order creation**:
+  - `OrderSummary` builds `orderData` with `addressId`, `items`, `paymentMethod` and optional `couponCode`.
+  - Sends POST `/api/orders` with Bearer token.
+  - Backend:
+    - Validates inputs, ensures address belongs to user.
+    - Validates coupon again (same constraints + single‑use).
+    - Partitions items by `storeId`, creating one `Order` per store.
+    - For non‑plus members, applies a single flat shipping fee to the first store’s order only.
+    - Applies coupon discount (percent of subtotal) across orders.
+    - For COD:
+      - Writes orders with `paymentMethod = COD`, clears cart, returns success message.
+    - For STRIPE:
+      - Computes aggregated `fullAmount` across all store orders.
+      - Creates Stripe Checkout session with metadata including `orderIds` and `userId`.
+      - Returns session URL; client redirects to Stripe.
+      - Stripe webhook later marks orders as paid and clears cart when payment succeeds.
+
+### Admin / Store Dashboards
+
+- **Store Dashboard** (`app/store/page.jsx` with `StoreLayout`):
+  - Overview metrics via `/api/store/dashboard`:
+    - Total products, total earnings, total orders, total ratings.
+    - List of ratings with user info and product details; links to product details.
+  - **Orders** (`app/store/orders/page.jsx` with `/api/store/orders`):
+    - Table of store orders with customer details, totals, payment method, status, coupon used, date.
+    - Status dropdown to update order `status` via POST `/api/store/orders`.
+    - Modal view for full order details (customer, address, items, coupon, payment).
+- **Admin Dashboard** (`app/admin/page.jsx` with `AdminLayout`):
+  - Overview metrics via `/api/admin/dashboard`:
+    - Total `products`, `orders`, `stores`, and computed total `revenue`.
+    - Time‑series chart of all orders via `OrdersAreaChart`.
+- **Admin Stores Management** (`app/admin/stores/page.jsx`):
+  - Lists stores with `StoreInfo` (logo, name, username, status, address, contact, owner info).
+  - Toggle switch to activate/deactivate a store via `/api/admin/toggle-store`.
+  - Deactivated stores:
+    - Cannot access store dashboard (`/store`).
+    - Public store page shows a message: “Your store is temorarily deactivated by the admin please contact to our costumer service center”.
+- **Admin Coupons Management** (`app/admin/coupons/page.jsx`):
+  - Create coupons:
+    - Fields: `code`, `description`, `discount`, `expiresAt` (date & time), `forNewUser`, `forMember`, `isPublic`.
+    - Uses `datetime-local` input; converts to `Date` before POST `/api/admin/coupon`.
+  - List coupons in a table with code, description, discount, expiry date/time, flags.
+  - Delete coupons via `/api/admin/coupon?code=` DELETE.
+
+### Store Creation & Approval
+
+- **Request store** (`app/(public)/create-store/page.jsx`):
+  - Logged‑in users submit store details: name, username, description, email, contact, address, logo.
+  - Uses `FormData` to POST `/api/store/create` with auth token.
+  - API validates uniqueness of `username`, uploads logo via ImageKit, creates `Store` with default `status = "pending"` and `isActive = false`.
+  - Associates store with Prisma `User`.
+- **Admin approval / rejection**:
+  - Admin endpoints (`/api/admin/approve-store`, `/api/admin/stores`) handle approving/rejecting.
+  - Approved stores can be toggled active via `/api/admin/toggle-store`.
+- **Seller access**:
+  - `authSeller` ensures only users with approved stores are treated as sellers.
+  - `/api/store/is-seller` returns `{ isSeller, storeInfo }` or 401 / 403 (deactivated).
+  - `StoreLayout` uses this to either render seller UI, show “not authorized”, or show “temporarily deactivated” message.
+
+### Image Uploads
+
+- **Store logo uploads**: `app/api/store/create/route.js`:
+  - Accepts `multipart/form-data` with image.
+  - Uses ImageKit to upload raw buffer, then requests an optimized WebP URL.
+  - Stores logo URL in the `Store` record.
+- **Product images**:
+  - `app/api/store/product/route.js` handles multi‑image uploads and product creation (referenced by add/manage product pages).
+
+### Address Management
+
+- **Model**: `Address` in Prisma with fields: `userId`, `name`, `email`, `street`, `city`, `state`, `zip`, `country`, `phone`.
+- **API**:
+  - `GET /api/address`: returns all addresses for the authenticated user.
+  - `POST /api/address`: creates a new address, attaches `userId`, returns `newAddress`.
+- **Frontend**:
+  - `AddressModal` collects address fields and POSTs to `/api/address`.
+  - On success, it dispatches `addAddress` to keep Redux state in sync.
+  - `OrderSummary` consumes `state.address.list` to populate dropdown.
+
+### Notifications & Feedback
+
+- Global `Toaster` injected at root layout level.
+- Most async operations use `toast.promise` or direct `toast.success` / `toast.error` to provide:
+  - Loading states (“Adding coupon…”, “Updating data…”, “Checking Coupon…”, etc.).
+  - Success messages (order placed, coupon applied, address added).
+  - Clear error messages using backend `error` payloads where available.
+
+---
+
+## Application Logic & Data Flow
+
+### High‑Level Data Flow
+
+1. **Authentication** (Clerk):
+   - User logs in via Clerk.
+   - Inngest receives `clerk/user.created` and creates a Prisma `User` row.
+   - For requests requiring auth, server code calls `auth()` or `getAuth()` to get `userId` and, optionally, `has({ plan: 'plus' })`.
+2. **Product & store data**:
+   - Public product list is served by `/api/products` and loaded into Redux via `fetchProducts` in `app/(public)/layout.jsx`.
+   - Store data and store‑specific products are loaded via `/api/store/data`.
+3. **Cart**:
+   - Redux manages cart state locally.
+   - On change, `uploadCart` posts to `/api/cart`, which persists the cart JSON on the `User` record.
+   - On login or page load, `fetchCart` retrieves this stored cart.
+4. **Checkout & Orders**:
+   - User selects payment method, address, and optional coupon.
+   - Frontend posts to `/api/orders`; backend:
+     - Validates address, coupon, membership, and new‑user status.
+     - Creates multiple `Order` records (one per store involved).
+     - For STRIPE, creates a Checkout session and returns `session.url`.
+   - Stripe webhook updates `Order.isPaid` and clears the cart when payment succeeds.
+5. **Admin & Seller views**:
+   - Dashboards query aggregate and detailed data from `Order`, `Store`, `Product`, `Rating` using Prisma queries.
+   - Seller‑only and admin‑only APIs guard access via `authSeller` and `authAdmin`.
+
+### API Route Patterns
+
+- Most routes share the pattern:
+  - Extract `userId`/auth context with `auth()` or `getAuth()`.
+  - Authorization check via `authAdmin` or `authSeller` when needed.
+  - Validate required request body or query params.
+  - Perform Prisma operations (CRUD + aggregates).
+  - Return JSON `{ data }` or `{ error }` with appropriate HTTP status codes.
+
+### Frontend–Backend Communication
+
+- Implemented via **Axios** on the client:
+  - Token handling:
+    - `useAuth().getToken()` used to get Bearer token.
+    - Sent in `Authorization: Bearer <token>` headers to protected APIs.
+  - Error handling:
+    - Catches Axios errors; most components use `error?.response?.data?.error || error.message` for user‑facing messages.
+  - Loading:
+    - Many actions wrapped in `toast.promise` to surface loading and success/error states.
+
+### State Management Logic
+
+- **Redux slices**:
+  - Each feature slice handles its own async server communication (`createAsyncThunk`) and synchronous state updates.
+  - Example: `addressSlice`:
+    - `fetchAddress`: calls `/api/address` with token; on `fulfilled`, replaces `state.list` with fetched addresses.
+    - `addAddress`: appends new address, guarding against non‑array state.
+  - `cartSlice`:
+    - `fetchCart` and `uploadCart` handle persistence.
+    - Reducers update `cartItems` and maintain `total` as derived sum.
+
+### Cart Logic
+
+- **addToCart**:
+  - Increments quantity for a product ID; if missing, sets to 1.
+  - Increments `total` count.
+- **removeFromCart**:
+  - Decrements quantity; removes product key if quantity hits zero.
+  - Decrements `total`.
+- **deleteItemFromCart**:
+  - Removes an item entirely and subtracts its quantity from `total`.
+- **clearCart**:
+  - Empties all cart items and resets `total` to 0.
+- **Server sync**:
+  - `uploadCart` (debounced) persists `cartItems` JSON to the user record.
+  - `fetchCart` hydration ensures cart is preserved between sessions.
+
+### Payment Logic
+
+- **COD**:
+  - Orders created and stored via `/api/orders` with `paymentMethod = COD`.
+  - No external payment; user `cart` is cleared after order creation.
+- **Stripe**:
+  - Orders created as pending (not paid) with `paymentMethod = STRIPE`.
+  - Stripe Checkout session created with single line item representing aggregated total.
+  - Webhook event `payment_intent.succeeded` marks orders as paid and empties cart.
+  - `payment_intent.canceled` keeps orders but sets `isPaid = false`.
+
+### Authentication Flow
+
+- Public pages accessible without login, but:
+  - Cart and order placement require login; if user not logged in, actions show a toast or redirect home.
+  - `/orders` redirects unauthenticated users to `/`.
+- `/admin` and `/store`:
+  - UI gating:
+    - `SignedIn` and `SignedOut` components from Clerk handle whether to show dashboards or sign‑in forms.
+  - Server gating:
+    - `/api/admin/*` requires `authAdmin` to be true.
+    - `/api/store/*` requires `authSeller` to return a store ID and, for some routes, that the store is active.
+
+---
+
+## UI / Layout Analysis
+
+### Main Pages
+
+- **Public**
+  - `/` – Home page with hero, featured products, specs, newsletter.
+  - `/shop` – All products with optional search query.
+  - `/shop/[username]` – Individual store’s public storefront.
+  - `/product/[productId]` – Product detail page.
+  - `/cart` – Cart and checkout summary.
+  - `/orders` – User’s past orders.
+  - `/pricing` – Subscription pricing (Clerk `PricingTable`).
+  - `/create-store` – Store application / onboarding page.
+- **Store (Seller)**
+  - `/store` – Seller dashboard overview.
+  - `/store/add-product` – Add new products.
+  - `/store/manage-product` – Manage products (edit availability).
+  - `/store/orders` – Store‑specific orders and status management.
+- **Admin**
+  - `/admin` – Admin dashboard (metrics + chart).
+  - `/admin/stores` – Manage store approvals and activation.
+  - `/admin/coupons` – Manage coupons.
+
+### Layout Structure
+
+- **Root layout** (`app/layout.jsx`):
+  - Wraps app in `ClerkProvider`, `Providers`, and `Toaster`.
+  - Sets base font via Google Fonts (`Outfit`).
+- **Public layout** (`app/(public)/layout.jsx`):
+  - Contains `Banner`, `Navbar`, `Footer`.
+  - Initializes core data:
+    - Dispatches `fetchProducts({})` on mount.
+    - When user exists: dispatches `fetchCart()`, `fetchAddress(getToken)`, `fetchUserRatings`.
+    - Keeps cart synced via `uploadCart` whenever `cartItems` change.
+- **Store layout** (`app/store/layout.jsx` + `components/store/StoreLayout.jsx`):
+  - For authenticated sellers only (UI + server guard).
+  - Renders `SellerNavbar`, `SellerSidebar`, and a scrollable content pane.
+  - When store is deactivated, shows a full‑screen message rather than dashboard.
+- **Admin layout** (`app/admin/layout.jsx` + `components/admin/AdminLayout.jsx`):
+  - Similar structure with `AdminNavbar`, `AdminSidebar`, and content pane.
+
+### Navigation System
+
+- **Top navigation**:
+  - `Navbar` (public) provides links to home, shop, pricing, cart, login, etc.
+- **Side navigation**:
+  - `StoreSidebar` lists seller actions (dashboard, add product, manage product, orders, etc.).
+  - `AdminSidebar` lists admin actions (dashboard, stores, coupons, approval).
+- **Routing**:
+  - All navigations use Next.js `Link` components or `useRouter().push(...)`.
+
+### Component Structure & Responsiveness
+
+- Many components use responsive utility classes:
+  - `max-w-7xl mx-auto`, `max-lg:flex-col`, `max-sm:text-sm`, etc.
+  - Tables hide non‑essential columns on small screens (`max-md:hidden`, `hidden md:table-cell`).
+  - Layouts ensure `min-h-[70vh]` / `min-h-screen` to maintain full‑height views.
+- The UI is optimized for desktop and mobile via Tailwind classes without extra custom media queries.
+
+---
+
+## Database Structure
+
+### Models (Prisma)
+
+- **User**
+  - Fields: `id` (Clerk ID), `name`, `email`, `image`, `cart` (JSON), relations:
+    - `Address[]`, `buyerOrders` (`Order[]`), `ratings`, optional `store`.
+- **Store**
+  - Fields: `id`, `userId` (unique), `name`, `description`, `username` (unique), `address`, `status`, `isActive`, `logo`, `email`, `contact`, timestamps.
+  - Relations: `Order[]`, `Product[]`, `user`.
+- **Product**
+  - Fields: `id`, `name`, `description`, `mrp`, `price`, `images` (string array), `category`, `inStock`, `storeId`, timestamps.
+  - Relations: `orderItems`, `store`, `rating`.
+- **Address**
+  - Fields: `id`, `userId`, `name`, `email`, `street`, `city`, `state`, `zip`, `country`, `phone`, `createdAt`.
+  - Relations: `user`, `Order[]`.
+- **Order**
+  - Fields: `id`, `total`, `status` (`OrderStatus`), `userId`, `storeId`, `addressId`, `isPaid`, `paymentMethod` (`COD` or `STRIPE`), `createdAt`, `updatedAt`, `isCouponUsed`, `coupon` (JSON).
+  - Relations: `address`, `store`, `user` (BuyerRelation), `orderItems`.
+- **OrderItem**
+  - Composite primary key: `@@id([orderId, productId])`.
+  - Fields: `orderId`, `productId`, `quantity`, `price`.
+  - Relations: `order`, `product`.
+- **Rating**
+  - Fields: `id`, `rating`, `review`, `userId`, `productId`, `orderId`, timestamps.
+  - Relations: `product`, `user`.
+  - Unique constraint: `@@unique([userId, productId, orderId])` to prevent duplicate ratings per product per order per user.
+- **Coupon**
+  - Fields: `code` (id), `description`, `discount` (float), `forNewUser`, `forMember`, `isPublic`, `expiresAt`, `createdAt`.
+
+### Relationships
+
+- One `User` → zero/one `Store`.
+- One `Store` → many `Product` and `Order`.
+- One `User` → many `Order` (buyer).
+- One `Order` → many `OrderItem`.
+- One `OrderItem` → one `Product`.
+- One `User` → many `Address`.
+- One `Order` → one `Address`.
+- One `Product` → many `Rating`.
+- One `User` → many `Rating`.
+- One `Order` → many `Rating` (via `orderId` field).
+
+---
+
+## Security Features
+
+- **Authentication**: All user‑specific and privileged routes use Clerk for reliable user identity.
+- **Authorization**:
+  - `authAdmin` and `authSeller` enforce role‑based access for admin and seller domains.
+  - Admin endpoints (`/api/admin/**`) require `isAdmin === true` (based on configured admin emails).
+  - Seller endpoints (`/api/store/**`) require `authSeller(userId)` to return a valid store ID.
+  - Store activity:
+    - Deactivated stores (via `isActive = false`) cannot:
+      - Access `/store` (seller dashboard).
+      - Be viewed publicly (`/shop/[username]` returns deactivation message).
+- **JWT / Tokens**:
+  - `useAuth().getToken()` retrieves a bearer token on the client.
+  - Server routes expect `Authorization: Bearer <token>` to authorize actions.
+- **Stripe Webhook Validation**:
+  - Uses `stripe.webhooks.constructEvent` with secret.
+  - Ensures only Stripe can mark orders paid/unpaid.
+- **Coupon integrity**:
+  - Validates expiry (`expiresAt > now()`).
+  - Enforces member/new‑user flags.
+  - Enforces **single use per user** by checking existing orders with matching coupon `code` in JSON.
+- **Data validation**:
+  - API routes perform input validation and return 400/401/403/404 with descriptive errors (e.g. missing params, not authorized, coupon not found).
+
+---
+
+## Performance & Best Practices
+
+- **Code Structure**:
+  - Clear separation by domain:
+    - Public vs store vs admin layouts in `app/`.
+    - API route grouping (`/api/admin`, `/api/store`, `/api/orders`, etc.).
+    - Redux slices by feature (`cart`, `product`, `address`, `rating`).
+  - Extensive reuse of presentation components (cards, tables, banners, modals).
+- **Data Access Optimization**:
+  - Prisma queries often `include` only necessary related data (`Product.rating`, `OrderItems.product`, etc.).
+  - Aggregate queries for admin dashboard minimize data transferred.
+  - Orders grouped by `storeId` on the server to avoid duplicating logic on client.
+- **State & Network Efficiency**:
+  - Redux centralizes product, cart, address, and rating state to avoid redundant fetches.
+  - `uploadCart` is debounced to reduce network chatter and DB writes.
+- **Error Handling**:
+  - All major async operations are wrapped in `try/catch`.
+  - Consistent user‑friendly error toasts.
+  - Server logs errors (`console.error`) for debugging.
+- **UX & Responsiveness**:
+  - Consistent use of `Loading` component during data fetches.
+  - Tables and cards responsive to different screen sizes.
+  - Deactivation and auth errors surfaced clearly to users with informative messages.
+
+---
+
+## Summary
+
+This GoCart project is a robust, full‑stack multi‑vendor e‑commerce platform built on Next.js App Router with Clerk authentication, Prisma+Postgres, Stripe payments, and Redux Toolkit state management. It supports a full shopper experience (browse, cart, checkout, orders), vendor operations (store creation, product and order management, analytics), and admin oversight (store and coupon control, platform metrics), with thoughtful security, background processing (Inngest), and a modern, responsive UI powered by Tailwind CSS.
+

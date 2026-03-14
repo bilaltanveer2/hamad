@@ -1,0 +1,191 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipTier {
+  REGULAR
+  PLUS
+  PREMIUM
+}
+
+model User {
+  id               String               @id
+  name             String
+  email            String
+  image            String
+  cart             Json                 @default("{}")
+  membershipTier   MembershipTier       @default(REGULAR)
+  loyaltyPoints    Int                  @default(0)
+  Address          Address[]
+  buyerOrders      Order[]              @relation("BuyerRelation")
+  ratings          Rating[]
+  wishlist         Wishlist[]
+  store            Store?
+  loyaltyHistory   LoyaltyTransaction[]
+}
+
+model LoyaltyTransaction {
+  id          String           @id @default(cuid())
+  userId      String
+  amount      Int
+  type        LoyaltyType
+  description String
+  createdAt   DateTime         @default(now())
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum LoyaltyType {
+  EARNED
+  REDEEMED
+  EXPIRED
+}
+
+model Wishlist {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+}
+
+model Product {
+  id          String      @id @default(cuid())
+  name        String
+  description String
+  mrp         Float
+  price       Float
+  images      String[]
+  category    String
+  inStock     Boolean     @default(true)
+  storeId     String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  orderItems  OrderItem[]
+  store       Store       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  rating      Rating[]
+  wishlist    Wishlist[]
+  variants    ProductVariant[]
+}
+
+model ProductVariant {
+  id        String   @id @default(cuid())
+  productId String
+  name      String   // e.g., "Color", "Size"
+  value     String   // e.g., "Red", "XL"
+  price     Float?   // Optional: override base price
+  stock     Int      @default(0)
+  image     String?
+  createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model Order {
+  id            String        @id @default(cuid())
+  total         Float
+  status        OrderStatus   @default(ORDER_PLACED)
+  userId        String
+  storeId       String
+  addressId     String
+  isPaid        Boolean       @default(false)
+  paymentMethod PaymentMethod
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  isCouponUsed  Boolean       @default(false)
+  coupon        Json          @default("{}")
+  address       Address       @relation(fields: [addressId], references: [id])
+  store         Store         @relation(fields: [storeId], references: [id])
+  user          User          @relation("BuyerRelation", fields: [userId], references: [id])
+  orderItems    OrderItem[]
+}
+
+model OrderItem {
+  id               String   @id @default(cuid())
+  orderId          String
+  productId        String
+  selectedVariants Json?      // Store array of variant objects or IDs
+  quantity         Int
+  price            Float
+  order            Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product          Product @relation(fields: [productId], references: [id])
+}
+
+model Rating {
+  id        String   @id @default(cuid())
+  rating    Int
+  review    String
+  userId    String
+  productId String
+  orderId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId, orderId])
+}
+
+model Address {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  email     String
+  street    String
+  city      String
+  state     String
+  zip       String
+  country   String
+  phone     String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  Order     Order[]
+}
+
+model Coupon {
+  code        String   @id
+  description String
+  discount    Float
+  forNewUser  Boolean
+  forMember   Boolean  @default(false)
+  isPublic    Boolean
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+}
+
+model Store {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  name        String
+  description String
+  username    String    @unique
+  address     String
+  status      String    @default("pending")
+  isActive    Boolean   @default(false)
+  logo        String
+  email       String
+  contact     String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  Order       Order[]
+  Product     Product[]
+  user        User      @relation(fields: [userId], references: [id])
+}
+
+enum OrderStatus {
+  ORDER_PLACED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+}
+
+enum PaymentMethod {
+  COD
+  STRIPE
+}
